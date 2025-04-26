@@ -938,5 +938,4 @@ IAlertManager <|-- ThresholdChecker
 @enduml
 ----
 
-
 == Код программы
