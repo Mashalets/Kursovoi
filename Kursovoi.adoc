@@ -930,10 +930,6 @@ MeasurementTask --> IADCReader
 MeasurementTask --> IDataProcessor
 MeasurementTask --> IAlertManager
 MeasurementTask --> ICommunication
-IADCReader <|-- ADCReader
-IDataProcessor <|-- AccelerationCalculator
-ICommunication <|-- BluetoothTransmitter
-IAlertManager <|-- ThresholdChecker
 
 @enduml
 ----
