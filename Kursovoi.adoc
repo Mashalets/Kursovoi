@@ -835,6 +835,11 @@ interface IAlertManager
   bool CheckThresholdExceeded(float ax, float ay, float az)
 }
 
+interface IObserver
+{
+ void OnAleft(char [] alert)
+}
+
 class ADCReader implements IADCReader 
 {
   void ReadAllChannels()
@@ -869,56 +874,76 @@ class CommunicationTask implements IThread
   void Execute()
 }
 
+class Formatter implements IFormatter {
+  char[] FormatData(float ax, float ay, float az)
+} 
+
 interface IFormatter
 {
   char[] FormatData (float ax, float ay, float az)
 }
 
+class AlertHandler implements IObserver {
+  void OnAleft(char [] alert)
+}
+
 MeasurementTask o-- IADCReader : "Чтение данных с АЦП"
 MeasurementTask o-- IDataProcessor : "Обработка и пересчёт ускорений"
 MeasurementTask o-- IAlertManager : "Проверка пороговых значений"
+MeasurementTask o-- IObserver : "Уведомление об аварии"
+
 CommunicationTask o-- ICommunication : "Отправка данных по Bluetooth"
 CommunicationTask o-- IFormatter : "Форматирование строки"
 IDataProvider -up-o CommunicationTask : "Получение ускорений"
+
+CommunicationTask --|> IObserver
 
 @enduml
 ----
 
 *Пояснение к архитектуре*
 
-`IThread` — интерфейс, реализуемый фоновыми задачами. Метод `Execute()` вызывается планировщиком или из `main()` и запускает соответствующий функциональный блок.
+Архитектура системы мониторинга вибрации реализована в виде набора взаимодействующих компонентов, разделённых по интерфейсам. Это обеспечивает модульность, тестируемость и масштабируемость системы.
 
-`MeasurementTask` — задача, запускаемая при старте. Отвечает за запуск АЦП (работает через DMA), получение кодов и их обработку. Взаимодействует с модулями:
+`IThread` — интерфейс, который реализуется задачами `MeasurementTask` и `CommunicationTask`. Метод `Execute()` вызывается для выполнения логики соответствующей задачи в основном цикле программы или планировщике.
 
-* `IADCReader` — для чтения значений с АЦП;
-* `IDataProcessor` — для перевода кодов в ускорения;
-* `IAlertManager` — для анализа тревог по порогам.
+`MeasurementTask` — основная задача, запускаемая при старте системы. Она:
 
-`CommunicationTask` — задача, отвечающая за отправку данных по Bluetooth. Взаимодействует с:
+* инициализирует и запускает АЦП (через DMA);
+* считывает значения с каналов АЦП через `IADCReader` (`ADCReader`);
+* обрабатывает полученные данные через `IDataProcessor` (`AccelerationCalculator`);
+* передаёт пересчитанные ускорения модулю `IAlertManager` (`ThresholdChecker`);
+* при превышении порогов инициирует вызов обработчика тревог `IObserver` (`AlertHandler`).
 
-* `ICommunication` — отправка через UART;
-* `IFormatter` — формирование строки вида `<AX:0.12;AY:0.34;AZ:0.56;>`.
+`CommunicationTask` — задача, выполняющая форматирование и отправку данных:
 
-`IADCReader` — интерфейс для чтения всех каналов и получения данных по именованным каналам. Реализуется классом `ADCReader`. АЦП запускается по DMA, чтение происходит из буфера.
+* получает данные об ускорениях через `IDataProvider` (`AccelerationCalculator`);
+* форматирует данные в строку через `IFormatter` (`Formatter`);
+* передаёт строку по Bluetooth через `ICommunication` (`BluetoothTransmitter`).
 
-`IAlertManager` — интерфейс, реализуемый классом `ThresholdChecker`, проверяет, превышает ли одно из значений осей порог `0.4 g`. Используется для генерации тревог.
+`ADCReader` реализует `IADCReader`, отвечает за чтение всех каналов АЦП и доступ к отдельным значениям по имени. АЦП работает через DMA — значения обновляются в буфере.
 
-`IDataProcessor` / `IDataProvider` — интерфейсы реализуются классом `AccelerationCalculator`. Он:
+`AccelerationCalculator` реализует интерфейсы `IDataProcessor` и `IDataProvider`. Он:
 
-* получает коды с АЦП;
-* преобразует их в ускорения с учётом напряжения питания `Vcc`;
-* предоставляет доступ к ускорениям по каждой оси для других компонентов (например, `CommunicationTask`).
+* принимает коды с АЦП (X, Y, Z и Vcc);
+* пересчитывает их в значения ускорений;
+* предоставляет доступ к ускорениям другим модулям.
 
-`IFormatter` — отвечает за преобразование значений ускорения в строку для передачи. Например, формат: `<AX:0.32;AY:0.22;AZ:0.41;>`.
+`ThresholdChecker` реализует `IAlertManager` и проверяет, превышает ли одно из ускорений (X, Y или Z) заданный порог (0.4g). При тревоге уведомляет подписчиков, реализующих `IObserver`.
 
-`ICommunication` — интерфейс для отправки строк по Bluetooth. Реализуется через `BluetoothTransmitter`, использующий UART.
+`AlertHandler` реализует `IObserver`, получает уведомление при тревоге и может инициировать действия — например, логирование или аварийную передачу по Bluetooth.
+
+`Formatter` реализует `IFormatter`, формирует строку для отправки, например, в формате: `<AX:0.23;AY:0.45;AZ:0.32;>`.
+
+`BluetoothTransmitter` реализует `ICommunication` и передаёт строки данных по UART-интерфейсу модуля Bluetooth (HC-06).
 
 *Взаимодействие компонентов*
 
-* `MeasurementTask` → запускается при инициализации и циклически опрашивает АЦП.
-* `ADCReader` → читает коды всех каналов из DMA-буфера.
-* `AccelerationCalculator` → пересчитывает коды в значения ускорений.
-* `ThresholdChecker` → проверяет, превышены ли пороговые значения.
-* `CommunicationTask` → форматирует данные и отправляет их по Bluetooth.
+. `MeasurementTask` запускается при старте системы, периодически опрашивает АЦП.
+. `ADCReader` получает данные из DMA-буфера и возвращает значения по каналам.
+. `AccelerationCalculator` преобразует коды в значения ускорений с учётом опорного напряжения (Vcc).
+. `ThresholdChecker` анализирует полученные ускорения и определяет, превышен ли порог.
+. При тревоге вызывается метод `OnAleft()` у всех подписанных реализаций `IObserver` (в данном случае — `AlertHandler`).
+. `CommunicationTask` получает пересчитанные значения, форматирует строку через `Formatter` и передаёт её по UART через `BluetoothTransmitter`.
 
 == Код программы
