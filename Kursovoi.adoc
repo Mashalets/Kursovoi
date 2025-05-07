@@ -796,82 +796,16 @@ V_{cc}^{\text{corrected}}=\frac{1.21\cdot4095}{1502}≈3.3,\text{В}
 
 == Разработка архитектуры в виде UML диаграммы
 
-*Общее описание архитектуры*
-
-Система предназначена для мониторинга вибраций с помощью аналогового акселерометра ADXL337 и передачи данных по Bluetooth.
-
-Основные задачи ПО:
-
-* Инициализация всех необходимых периферийных устройств STM32F411RE (АЦП, UART, таймеры).
-
-* Периодический сбор данных о вибрации по осям X, Y, Z.
-
-* Обработка сигналов: пересчёт значений АЦП в ускорение (g).
-
-* Формирование и передача структурированного пакета данных через модуль Bluetooth HC-06.
-
-* Генерация предупреждений при превышении установленного порогового значения ускорения.
-
-На основе требований к системе мониторинга вибраций была разработана архитектура программного обеспечения. Архитектура включает в себя интерфейсы и классы, каждый из которых отвечает за отдельную функцию системы.
-
-*Интерфейсы:*
-
-`IADCReader` — для классов, считывающих данные с АЦП.
-
-`IDataProcessor` — для обработки (перевода) данных с АЦП в физические величины.
-
-`ICommunication` — для передачи данных на внешнее устройство.
-
-`IAlertManager` — для проверки превышения вибрации пороговых значений.
-
-*Классы:*
-
-* `ADCReader` реализует `IADCReader`
-
-Считывает "сырые" данные АЦП для каналов X, Y, Z, Vcc.
-
-* `AccelerationCalculator` реализует `IDataProcessor`
-
-Переводит значения АЦП в ускорение в единицах g с учётом Vcc.
-
-* `BluetoothTransmitter` реализует `ICommunication`
-
-Формирует строку с данными о вибрации и передаёт её по UART через HC-06.
-
-* `ThresholdChecker` реализует `IAlertManager`
-
-Сравнивает рассчитанные ускорения с установленным порогом и при необходимости генерирует предупреждение.
-
-* `MeasurementTask`
-
-Управляет всей последовательностью измерений и передачи данных: запрашивает АЦП, обрабатывает данные, проверяет пороги и инициирует отправку пакета.
-
-*Логика работы компонентов:*
-
-. MeasurementTask по таймеру инициирует процесс сбора данных.
-
-. ADCReader считывает значения с каналов X, Y, Z и Vcc.
-
-. AccelerationCalculator обрабатывает считанные значения:
-
-* Переводит их в напряжение,
-
-* Переводит напряжение в ускорение по каждой оси.
-
-. ThresholdChecker проверяет, не превышает ли ускорение допустимое значение.
-
-. BluetoothTransmitter формирует строку пакета `<AX:...;AY:...;AZ:...;>` и отправляет по UART.
-
-[NOTE]
-====
-Если обнаружено превышение порога, вместе с данными может быть отправлено сообщение о тревоге.
-====
-
 *UML диаграмма:*
 
 [plantuml, exti_sequence, svg]
 ----
 @startuml
+
+interface IThread
+{
+  void Execute()
+}
 
 interface IADCReader 
 {
@@ -882,6 +816,10 @@ interface IADCReader
 interface IDataProcessor
 {
   void Process(uint16_t adcX, uint16_t adcY, uint16_t adcZ, uint16_t adcVcc)
+}
+
+interface IDataProvider
+{
   float GetAccelerationX()
   float GetAccelerationY()
   float GetAccelerationZ()
@@ -889,12 +827,17 @@ interface IDataProcessor
 
 interface ICommunication 
 {
-  void SendData(float ax, float ay, float az)
+  void SendData(char [] string)
 }
 
 interface IAlertManager
 {
   bool CheckThresholdExceeded(float ax, float ay, float az)
+}
+
+interface IObserver
+{
+ void OnAleft(char [] alert)
 }
 
 class ADCReader implements IADCReader 
@@ -903,9 +846,9 @@ class ADCReader implements IADCReader
   uint16_t GetChannelValue(string channel)
 }
 
-class AccelerationCalculator implements IDataProcessor 
+class AccelerationCalculator implements IDataProcessor, IDataProvider
 {
-  void Process(uint16_t adcX, uint16_t adcY, uint16_t adcZ, uint16_t adcVcc)
+  void ProcessAndStore(uint16_t adcX, uint16_t adcY, uint16_t adcZ, uint16_t adcVcc)
   float GetAccelerationX()
   float GetAccelerationY()
   float GetAccelerationZ()
@@ -913,7 +856,7 @@ class AccelerationCalculator implements IDataProcessor
 
 class BluetoothTransmitter implements ICommunication 
 {
-  void SendData(float ax, float ay, float az)
+  void SendData(char [] string)
 }
 
 class ThresholdChecker implements IAlertManager 
@@ -921,22 +864,93 @@ class ThresholdChecker implements IAlertManager
   bool CheckThresholdExceeded(float ax, float ay, float az)
 }
 
-class MeasurementTask 
+class MeasurementTask implements IThread
 {
   void Execute()
 }
 
-MeasurementTask --> IADCReader
-MeasurementTask --> IDataProcessor
-MeasurementTask --> IAlertManager
-MeasurementTask --> ICommunication
-IADCReader <|-- ADCReader
-IDataProcessor <|-- AccelerationCalculator
-ICommunication <|-- BluetoothTransmitter
-IAlertManager <|-- ThresholdChecker
+class CommunicationTask implements IThread, IObserver {
+  void Execute()
+  void OnAleft(char [] alert)
+}
+
+class Formatter implements IFormatter {
+  char[] FormatData(float ax, float ay, float az)
+} 
+
+interface IFormatter
+{
+  char[] FormatData (float ax, float ay, float az)
+}
+
+
+MeasurementTask o-- IADCReader : "Чтение данных с АЦП"
+MeasurementTask o-- IDataProcessor : "Обработка и пересчёт ускорений"
+MeasurementTask o-- IAlertManager : "Проверка пороговых значений"
+MeasurementTask o-- IObserver : "Уведомление об аварии"
+
+CommunicationTask o-- ICommunication : "Отправка данных по Bluetooth"
+CommunicationTask o-- IFormatter : "Форматирование строки"
+IDataProvider -up-o CommunicationTask : "Получение ускорений"
+
+CommunicationTask --|> IObserver
 
 @enduml
 ----
 
+*Пояснение к архитектуре*
+
+`IThread` — базовый интерфейс для задач, выполняемых в фоне. Метод `Execute()` вызывается планировщиком или из `main()` и запускает соответствующую задачу.
+
+`MeasurementTask` — задача, запускаемая при инициализации системы. Выполняет основной цикл измерений:
+* получает данные с АЦП через `IADCReader` (реализуется классом `ADCReader`);
+* обрабатывает данные, пересчитывая в ускорения, через `IDataProcessor` (реализуется `AccelerationCalculator`);
+* анализирует превышение порогов с использованием `IAlertManager` (реализуется `ThresholdChecker`);
+* при необходимости уведомляет подписчиков по интерфейсу `IObserver`.
+
+`CommunicationTask` — задача, отвечающая за передачу данных по Bluetooth и реагирующая на аварийные сигналы:
+* получает доступ к данным об ускорении через `IDataProvider`;
+* форматирует данные в строку по шаблону `<AX:0.32;AY:0.21;AZ:0.41;>` через `IFormatter` (реализация — `Formatter`);
+* отправляет строку по Bluetooth через `ICommunication` (реализация — `BluetoothTransmitter`);
+* реализует интерфейс `IObserver`, реагируя на аварийные уведомления от `MeasurementTask`.
+
+`IADCReader` — интерфейс доступа к АЦП. Реализуется `ADCReader`, который читает значения из DMA-буфера и предоставляет доступ по имени канала.
+
+`IDataProcessor` / `IDataProvider` — интерфейсы, реализуемые классом `AccelerationCalculator`. Он:
+* получает необработанные значения с АЦП;
+* вычисляет ускорения по осям X, Y, Z с учетом текущего напряжения питания;
+* предоставляет доступ к значениям другим модулям (например, `CommunicationTask`).
+
+`IAlertManager` — интерфейс для анализа аварийных ситуаций. Класс `ThresholdChecker` проверяет, превышают ли значения ускорения заданный порог (например, 0.4g) и инициирует тревогу.
+
+`IFormatter` — интерфейс для преобразования данных ускорения в строку. Реализуется `Formatter`, формирующим строку в стандартном формате.
+
+`ICommunication` — интерфейс отправки сообщений, реализуемый `BluetoothTransmitter`, использующим UART-интерфейс.
+
+`IObserver` — интерфейс для подписки на тревожные события. `CommunicationTask` реализует его и при тревоге (вызывается метод `OnAleft`) отправляет соответствующее сообщение.
+
+*Взаимодействие компонентов*
+
+* `MeasurementTask` — запускается при старте, выполняет цикл:
+** считывает данные с АЦП через `ADCReader`;
+** пересчитывает их в ускорения через `AccelerationCalculator`;
+** проверяет аварийные ситуации через `ThresholdChecker`;
+** при срабатывании тревоги вызывает `OnAleft()` у всех реализующих `IObserver`.
+
+* `ADCReader` — получает данные всех каналов из DMA-буфера. Используется только `MeasurementTask`.
+
+* `AccelerationCalculator` —:
+
+** пересчитывает данные в ускорения;
+** предоставляет доступ к ним через `IDataProvider`.
+
+* `ThresholdChecker` — анализирует значения ускорений, полученных от `AccelerationCalculator`, и при необходимости инициирует тревогу.
+
+* `CommunicationTask` —:
+
+** запрашивает данные ускорения у `AccelerationCalculator` через `IDataProvider`;
+** форматирует данные с помощью `Formatter`;
+** отправляет данные через `BluetoothTransmitter`;
+** реализует `IObserver` — получает уведомления об авариях и реагирует отправкой тревожного сообщения.
 
 == Код программы
